@@ -175,8 +175,15 @@ def get_db():
 
 
 def get_db_connection_info():
-    """Lấy thông tin SQL Server hiện đang kết nối để debug cấu hình DB."""
-    _require_auth_mssql_mode()
+    """Lấy thông tin kết nối DB hiện tại để debug cấu hình deploy/runtime."""
+    if not _is_mssql_mode():
+        return {
+            'server': 'local-file',
+            'database': os.path.basename(DB_PATH),
+            'loginUser': None,
+            'mode': 'sqlite'
+        }
+
     conn = get_db()
     try:
         row = _fetchone_dict(
@@ -417,8 +424,7 @@ class User:
 
     @staticmethod
     def create(full_name: str, email: str, password: str):
-        """Tạo user mới trong bảng TaiKhoan (SQL Server)."""
-        _require_auth_mssql_mode()
+        """Tạo user mới trong DB auth hiện tại."""
         full_name = (full_name or '').strip()
         email = _normalize_email(email)
         password = _normalize_password(password)
@@ -426,10 +432,16 @@ class User:
         conn = get_db()
         password_hash = generate_password_hash(password)
         try:
-            conn.execute(
-                'INSERT INTO TaiKhoan (HoTen, Email, MatKhau, NgayTao) VALUES (?, ?, ?, ?)',
-                (full_name, email, password_hash, datetime.now())
-            )
+            if _is_mssql_mode():
+                conn.execute(
+                    'INSERT INTO TaiKhoan (HoTen, Email, MatKhau, NgayTao) VALUES (?, ?, ?, ?)',
+                    (full_name, email, password_hash, datetime.now())
+                )
+            else:
+                conn.execute(
+                    'INSERT INTO Users (FullName, Email, PasswordHash, CreatedDate) VALUES (?, ?, ?, ?)',
+                    (full_name, email, password_hash, datetime.now().isoformat())
+                )
             conn.commit()
             return True, 'Đăng ký thành công'
         except Exception as e:
@@ -442,27 +454,36 @@ class User:
 
     @staticmethod
     def find_by_email(email: str):
-        """Tìm user theo email từ bảng TaiKhoan (SQL Server)."""
-        _require_auth_mssql_mode()
+        """Tìm user theo email từ DB auth hiện tại."""
         normalized_email = _normalize_email(email)
         conn = get_db()
         try:
-            row = _fetchone_dict(
-                conn,
-                '''SELECT TOP 1 Id, HoTen, Email, MatKhau, NgayTao
-                   FROM TaiKhoan
-                   WHERE LOWER(LTRIM(RTRIM(Email))) = LOWER(LTRIM(RTRIM(?)))''',
-                (normalized_email,)
-            )
+            if _is_mssql_mode():
+                row = _fetchone_dict(
+                    conn,
+                    '''SELECT TOP 1 Id, HoTen, Email, MatKhau, NgayTao
+                       FROM TaiKhoan
+                       WHERE LOWER(LTRIM(RTRIM(Email))) = LOWER(LTRIM(RTRIM(?)))''',
+                    (normalized_email,)
+                )
+            else:
+                row = _fetchone_dict(
+                    conn,
+                    '''SELECT Id, FullName, Email, PasswordHash, CreatedDate
+                       FROM Users
+                       WHERE LOWER(TRIM(Email)) = LOWER(TRIM(?))
+                       LIMIT 1''',
+                    (normalized_email,)
+                )
             if not row:
                 return None
 
             return User(
                 id=row['Id'],
-                full_name=row['HoTen'],
+                full_name=row.get('HoTen') or row.get('FullName'),
                 email=row['Email'],
-                password_hash=row['MatKhau'],
-                created_date=row['NgayTao']
+                password_hash=row.get('MatKhau') or row.get('PasswordHash'),
+                created_date=row.get('NgayTao') or row.get('CreatedDate')
             )
         finally:
             conn.close()
@@ -475,24 +496,33 @@ class User:
         - Ưu tiên xác thực mật khẩu hash.
         - Hỗ trợ dữ liệu plain text cũ và tự nâng cấp lên hash.
         """
-        _require_auth_mssql_mode()
         normalized_email = _normalize_email(email)
         normalized_password = _normalize_password(password)
 
         conn = get_db()
         try:
-            row = _fetchone_dict(
-                conn,
-                '''SELECT TOP 1 Id, HoTen, Email, MatKhau, NgayTao
-                   FROM TaiKhoan
-                   WHERE LOWER(LTRIM(RTRIM(Email))) = LOWER(LTRIM(RTRIM(?)))''',
-                (normalized_email,)
-            )
+            if _is_mssql_mode():
+                row = _fetchone_dict(
+                    conn,
+                    '''SELECT TOP 1 Id, HoTen, Email, MatKhau, NgayTao
+                       FROM TaiKhoan
+                       WHERE LOWER(LTRIM(RTRIM(Email))) = LOWER(LTRIM(RTRIM(?)))''',
+                    (normalized_email,)
+                )
+            else:
+                row = _fetchone_dict(
+                    conn,
+                    '''SELECT Id, FullName, Email, PasswordHash, CreatedDate
+                       FROM Users
+                       WHERE LOWER(TRIM(Email)) = LOWER(TRIM(?))
+                       LIMIT 1''',
+                    (normalized_email,)
+                )
 
             if not row:
                 return None
 
-            stored = (row.get('MatKhau') or '').strip()
+            stored = ((row.get('MatKhau') or row.get('PasswordHash')) or '').strip()
             is_match = False
 
             if stored.startswith('pbkdf2:') or stored.startswith('scrypt:'):
@@ -502,19 +532,25 @@ class User:
                 is_match = stored == normalized_password
                 if is_match and normalized_password:
                     new_hash = generate_password_hash(normalized_password)
-                    conn.execute('UPDATE TaiKhoan SET MatKhau = ? WHERE Id = ?', (new_hash, row['Id']))
+                    if _is_mssql_mode():
+                        conn.execute('UPDATE TaiKhoan SET MatKhau = ? WHERE Id = ?', (new_hash, row['Id']))
+                    else:
+                        conn.execute('UPDATE Users SET PasswordHash = ? WHERE Id = ?', (new_hash, row['Id']))
                     conn.commit()
-                    row['MatKhau'] = new_hash
+                    if _is_mssql_mode():
+                        row['MatKhau'] = new_hash
+                    else:
+                        row['PasswordHash'] = new_hash
 
             if not is_match:
                 return None
 
             return User(
                 id=row['Id'],
-                full_name=row['HoTen'],
+                full_name=row.get('HoTen') or row.get('FullName'),
                 email=row['Email'],
-                password_hash=row['MatKhau'],
-                created_date=row['NgayTao']
+                password_hash=row.get('MatKhau') or row.get('PasswordHash'),
+                created_date=row.get('NgayTao') or row.get('CreatedDate')
             )
         finally:
             conn.close()
@@ -522,7 +558,6 @@ class User:
     @staticmethod
     def find_or_create_google(full_name: str, email: str, google_id: str):
         """Tìm hoặc tạo user đăng nhập qua Google."""
-        _require_auth_mssql_mode()
         email = _normalize_email(email)
         full_name = (full_name or '').strip() or email.split('@')[0]
 
@@ -534,10 +569,16 @@ class User:
         conn = get_db()
         placeholder = generate_password_hash(f'GOOGLE_OAUTH:{google_id}:{datetime.now().isoformat()}')
         try:
-            conn.execute(
-                'INSERT INTO TaiKhoan (HoTen, Email, MatKhau, NgayTao) VALUES (?, ?, ?, ?)',
-                (full_name, email, placeholder, datetime.now())
-            )
+            if _is_mssql_mode():
+                conn.execute(
+                    'INSERT INTO TaiKhoan (HoTen, Email, MatKhau, NgayTao) VALUES (?, ?, ?, ?)',
+                    (full_name, email, placeholder, datetime.now())
+                )
+            else:
+                conn.execute(
+                    'INSERT INTO Users (FullName, Email, PasswordHash, CreatedDate) VALUES (?, ?, ?, ?)',
+                    (full_name, email, placeholder, datetime.now().isoformat())
+                )
             conn.commit()
         except Exception as e:
             message = str(e).lower()
@@ -552,21 +593,30 @@ class User:
     @staticmethod
     def reset_password(email: str, new_password: str):
         """Đặt lại mật khẩu cho user theo email."""
-        _require_auth_mssql_mode()
         email = _normalize_email(email)
         new_password = _normalize_password(new_password)
         if not new_password or len(new_password) < 6:
             return False, 'Mật khẩu phải có ít nhất 6 ký tự'
         conn = get_db()
         try:
-            row = _fetchone_dict(conn,
-                '''SELECT TOP 1 Id FROM TaiKhoan
-                   WHERE LOWER(LTRIM(RTRIM(Email))) = LOWER(LTRIM(RTRIM(?)))''',
-                (email,))
+            if _is_mssql_mode():
+                row = _fetchone_dict(conn,
+                    '''SELECT TOP 1 Id FROM TaiKhoan
+                       WHERE LOWER(LTRIM(RTRIM(Email))) = LOWER(LTRIM(RTRIM(?)))''',
+                    (email,))
+            else:
+                row = _fetchone_dict(conn,
+                    '''SELECT Id FROM Users
+                       WHERE LOWER(TRIM(Email)) = LOWER(TRIM(?))
+                       LIMIT 1''',
+                    (email,))
             if not row:
                 return False, 'Email không tồn tại trong hệ thống'
             new_hash = generate_password_hash(new_password)
-            conn.execute('UPDATE TaiKhoan SET MatKhau = ? WHERE Id = ?', (new_hash, row['Id']))
+            if _is_mssql_mode():
+                conn.execute('UPDATE TaiKhoan SET MatKhau = ? WHERE Id = ?', (new_hash, row['Id']))
+            else:
+                conn.execute('UPDATE Users SET PasswordHash = ? WHERE Id = ?', (new_hash, row['Id']))
             conn.commit()
             return True, 'Đặt lại mật khẩu thành công'
         finally:

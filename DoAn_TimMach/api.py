@@ -3,7 +3,7 @@ API Backend cho ứng dụng dự đoán bệnh tim
 Flask REST API để kết nối với Frontend React
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from waitress import serve
 import joblib
@@ -100,6 +100,42 @@ bundle = load_model()
 # Keep backward-compat alias
 model = bundle['model'] if bundle else None
 
+BASE_DIR = os.path.dirname(__file__)
+FRONTEND_BUILD_DIR = os.path.join(BASE_DIR, 'Fontend', 'build')
+FRONTEND_INDEX_FILE = os.path.join(FRONTEND_BUILD_DIR, 'index.html')
+
+
+def _frontend_build_available() -> bool:
+    return os.path.exists(FRONTEND_INDEX_FILE)
+
+
+def _api_metadata():
+    return {
+        'name': 'Heart Disease Prediction API',
+        'version': bundle.get('version', '1.0') if bundle else '1.0',
+        'status': 'running',
+        'model_loaded': model is not None,
+        'model_type': type(model).__name__ if model else None,
+        'frontend_served': _frontend_build_available(),
+        'endpoints': {
+            'health': '/api/health',
+            'predict': '/api/predict (POST)',
+            'feature_importance': '/api/feature-importance'
+        }
+    }
+
+
+def _serve_frontend(path: str = ''):
+    if not _frontend_build_available():
+        return jsonify(_api_metadata())
+
+    if path:
+        requested_path = os.path.join(FRONTEND_BUILD_DIR, path)
+        if os.path.isfile(requested_path):
+            return send_from_directory(FRONTEND_BUILD_DIR, path)
+
+    return send_from_directory(FRONTEND_BUILD_DIR, 'index.html')
+
 @app.before_request
 def _before():
     """Ghi thời điểm bắt đầu request."""
@@ -142,21 +178,16 @@ def _after(response):
     return response
 
 
+@app.route('/api', methods=['GET'])
+def api_home():
+    """Thông tin API cho môi trường dev/deploy."""
+    return jsonify(_api_metadata())
+
+
 @app.route('/', methods=['GET'])
 def home():
-    """Trang chủ API"""
-    return jsonify({
-        'name': 'Heart Disease Prediction API',
-        'version': bundle.get('version', '1.0') if bundle else '1.0',
-        'status': 'running',
-        'model_loaded': model is not None,
-        'model_type': type(model).__name__ if model else None,
-        'endpoints': {
-            'health': '/api/health',
-            'predict': '/api/predict (POST)',
-            'feature_importance': '/api/feature-importance'
-        }
-    })
+    """Trang chủ: ưu tiên phục vụ frontend build nếu có."""
+    return _serve_frontend()
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -1347,9 +1378,18 @@ def get_current_user():
     return jsonify({'user': user.to_dict()})
 
 
+@app.route('/<path:path>', methods=['GET'])
+def frontend_routes(path):
+    """Phục vụ asset/frontend routes khi deploy chung Flask + React."""
+    if path.startswith('api/'):
+        return jsonify({'error': 'Không tìm thấy endpoint'}), 404
+    return _serve_frontend(path)
+
+
 if __name__ == '__main__':
     host = os.environ.get('API_HOST', '127.0.0.1')
     port = int(os.environ.get('API_PORT', '5001'))
+    use_waitress = os.environ.get('USE_WAITRESS', '0').lower() in ('1', 'true', 'yes')
     print("Starting Heart Disease Prediction API...")
     print(f"Model loaded: {model is not None}")
     if AUTH_DB_BOOT_STATUS.get('connected'):
@@ -1360,4 +1400,7 @@ if __name__ == '__main__':
     else:
         print(f"Auth DB error: {AUTH_DB_BOOT_STATUS.get('error')}")
     print(f"Server running on http://{host}:{port}")
-    app.run(host=host, port=port, debug=False)
+    if use_waitress:
+        serve(app, host=host, port=port)
+    else:
+        app.run(host=host, port=port, debug=False)
