@@ -16,6 +16,7 @@ import hashlib
 import time
 import json
 import base64
+from datetime import datetime
 
 import random
 import string
@@ -72,17 +73,40 @@ _FEATURES  = ['age','sex','cp','trestbps','chol','fbs',
 # Load mô hình
 def load_model():
     """Load model bundle (v2.0: dict with model + scaler) or legacy model."""
-    model_path = os.path.join(os.path.dirname(__file__), 'models', 'heart_model.pkl')
-    try:
-        obj = joblib.load(model_path)
-        # New format: dict bundle
-        if isinstance(obj, dict) and 'model' in obj:
-            return obj  # {'model', 'scaler', 'feature_names', 'cont_idx', 'version'}
-        # Legacy: raw sklearn/xgboost model
-        return {'model': obj, 'scaler': None,
-                'feature_names': _FEATURES, 'cont_idx': _CONT_IDX}
-    except FileNotFoundError:
-        return None
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    env_model_path = os.environ.get('MODEL_PATH', '').strip()
+    candidate_paths = [
+        env_model_path,
+        os.path.abspath(os.path.join(base_dir, 'model.pkl')),
+        os.path.abspath(os.path.join(base_dir, 'models', 'heart_model.pkl')),
+    ]
+
+    seen = set()
+    for model_path in candidate_paths:
+        if not model_path:
+            continue
+        model_path = os.path.abspath(model_path)
+        if model_path in seen:
+            continue
+        seen.add(model_path)
+
+        if not os.path.exists(model_path):
+            continue
+        try:
+            obj = joblib.load(model_path)
+            # New format: dict bundle
+            if isinstance(obj, dict) and 'model' in obj:
+                return obj  # {'model', 'scaler', 'feature_names', 'cont_idx', 'version'}
+            # Legacy: raw sklearn/xgboost model
+            return {
+                'model': obj,
+                'scaler': None,
+                'feature_names': _FEATURES,
+                'cont_idx': _CONT_IDX,
+            }
+        except Exception:
+            continue
+    return None
 
 def _apply_preprocessing(bundle: dict, input_data: dict) -> np.ndarray:
     """Convert dict input → scaled numpy array matching training pipeline."""
@@ -94,6 +118,72 @@ def _apply_preprocessing(bundle: dict, input_data: dict) -> np.ndarray:
     if scaler is not None:
         row[:, cont_idx] = scaler.transform(row[:, cont_idx])
     return row
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def derive_ecg_metrics(input_data: dict, risk_score: float, prediction: int) -> dict:
+    """
+    Suy diễn bộ thông số ECG từ dữ liệu lâm sàng + kết quả chẩn đoán.
+    Lưu ý: đây không phải waveform đo trực tiếp từ máy ECG,
+    mà là chỉ số được ước lượng theo hồ sơ bệnh nhân.
+    """
+    age = float(input_data['age'])
+    sex = int(input_data['sex'])
+    restecg = int(input_data['restecg'])
+    exang = int(input_data['exang'])
+    oldpeak = float(input_data['oldpeak'])
+    ca = int(input_data['ca'])
+    thalach = float(input_data['thalach'])
+    fbs = int(input_data['fbs'])
+
+    # Ước lượng nhịp tim hiện tại từ nhịp tim gắng sức + yếu tố nguy cơ
+    predicted_max_hr = max(120.0, 220.0 - age)
+    effort_ratio = _clamp(thalach / predicted_max_hr, 0.35, 1.20)
+    resting_hr_est = (
+        67.0
+        + (1.0 - effort_ratio) * 22.0
+        + oldpeak * 2.2
+        + (7.0 if exang == 1 else 0.0)
+        + (5.0 if risk_score >= 70 else 0.0)
+        + (2.0 if fbs == 1 else 0.0)
+    )
+    heart_rate = int(round(_clamp(resting_hr_est, 48.0, 145.0)))
+
+    rr_ms = 60000.0 / max(heart_rate, 1)
+    rr_sqrt = np.sqrt(rr_ms / 1000.0)
+
+    # PR kéo dài hơn ở nhóm lớn tuổi / nguy cơ cao / thiếu máu cơ tim gắng sức
+    pr_ms = 150.0 + age * 0.28 + oldpeak * 4.5 + (7.0 if exang == 1 else 0.0) + (5.0 if restecg in (1, 2) else 0.0)
+    pr_ms += 4.0 if risk_score >= 70 else 0.0
+    pr_ms = int(round(_clamp(pr_ms, 110.0, 240.0)))
+
+    # QRS chịu ảnh hưởng bởi bất thường ECG nghỉ và mức độ tổn thương mạch
+    qrs_ms = 88.0 + (9.0 if restecg in (1, 2) else 0.0) + ca * 4.0 + (6.0 if prediction == 1 else 0.0)
+    qrs_ms += 3.0 if oldpeak >= 2.0 else 0.0
+    qrs_ms = int(round(_clamp(qrs_ms, 75.0, 160.0)))
+
+    # QT/QTc: dùng công thức Bazett để giữ tính sinh lý theo nhịp tim
+    qtc_ms = 408.0 + age * 0.35 + oldpeak * 4.0 + (9.0 if restecg in (1, 2) else 0.0)
+    qtc_ms += (8.0 if sex == 0 else 0.0) + (risk_score - 50.0) * 0.18
+    qtc_ms = _clamp(qtc_ms, 370.0, 520.0)
+
+    qt_ms = int(round(_clamp(qtc_ms * rr_sqrt, 320.0, 520.0)))
+    qtc_ms = int(round(_clamp(qt_ms / max(rr_sqrt, 1e-6), 360.0, 540.0)))
+
+    return {
+        'recorded_at': datetime.now().strftime('%d/%m/%Y %H:%M'),
+        'lead': 'Lead II',
+        'source': 'derived_from_clinical_inputs',
+        'heart_rate_bpm': heart_rate,
+        'pr_ms': pr_ms,
+        'qrs_ms': qrs_ms,
+        'qt_ms': qt_ms,
+        'qtc_ms': qtc_ms,
+        'rr_interval_ms': int(round(rr_ms)),
+    }
 
 # Khởi tạo model khi start server
 bundle = load_model()
@@ -264,6 +354,7 @@ def predict():
             risk_score = calculate_mock_risk(input_data)
             risk_level = get_risk_level(risk_score)
             prediction_val = 1 if risk_score > 50 else 0
+            ecg_metrics = derive_ecg_metrics(input_data, risk_score, prediction_val)
             urgent_referral = risk_score >= 70
             increase_factors, protective_factors = analyze_shap_factors(input_data, risk_score)
             recommendations = get_clinical_recommendations(risk_level, risk_score, urgent_referral)
@@ -280,6 +371,7 @@ def predict():
                 'increase_factors': increase_factors,
                 'protective_factors': protective_factors,
                 'clinical_recommendations': recommendations,
+                'ecg_metrics': ecg_metrics,
                 'model_info': {'version': 'rule-based', 'model_type': 'RuleBased',
                                'training_date': 'N/A', 'accuracy': None, 'n_features': 13,
                                'description': 'Dự đoán dựa trên quy tắc lâm sàng'},
@@ -299,6 +391,7 @@ def predict():
         # Binary prediction
         prediction = int(model.predict(X_input)[0])
         risk_level = get_risk_level(risk_score)
+        ecg_metrics = derive_ecg_metrics(input_data, risk_score, prediction)
         urgent_referral = risk_score >= 70  # Cảnh báo khẩn: cần chuyển khám ngay
 
         # Tính khoảng tin cậy và độ bất định
@@ -327,6 +420,7 @@ def predict():
             'increase_factors': increase_factors,
             'protective_factors': protective_factors,
             'clinical_recommendations': recommendations,
+            'ecg_metrics': ecg_metrics,
             'model_info': get_model_info(bundle),
         })
         
@@ -1388,7 +1482,7 @@ def frontend_routes(path):
 
 if __name__ == '__main__':
     host = os.environ.get('API_HOST', '127.0.0.1')
-    port = int(os.environ.get('API_PORT', '5001'))
+    port = int(os.environ.get('PORT', os.environ.get('API_PORT', '5001')))
     use_waitress = os.environ.get('USE_WAITRESS', '0').lower() in ('1', 'true', 'yes')
     print("Starting Heart Disease Prediction API...")
     print(f"Model loaded: {model is not None}")

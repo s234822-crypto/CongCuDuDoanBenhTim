@@ -352,8 +352,8 @@ export function DashboardPage() {
       </div>
 
       {/* ───── MAIN 2-COL: Form + Result ───── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-        {/* LEFT: Form */}
+      <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: '20px' }}>
+        {/* LEFT: Form + ECG */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div className="anim-fade-up anim-delay-1">
             <PatientForm onPredict={handlePredict} isLoading={isLoading} />
@@ -372,6 +372,9 @@ export function DashboardPage() {
               <PatientSummary data={patientData} />
             </div>
           )}
+          <div className="anim-fade-up anim-delay-3">
+            <ECGPreview riskScore={riskScore} patientData={patientData} prediction={predictionResult?.prediction ?? null} />
+          </div>
         </div>
 
         {/* RIGHT: Results */}
@@ -468,9 +471,6 @@ export function DashboardPage() {
             </div>
           )}
 
-          <div className="anim-fade-up anim-delay-3">
-            <ECGPreview />
-          </div>
         </div>
       </div>
 

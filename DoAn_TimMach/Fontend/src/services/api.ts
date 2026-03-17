@@ -85,6 +85,18 @@ export interface ModelInfo {
     description: string;
 }
 
+export interface EcgMetrics {
+    recorded_at: string;
+    lead: string;
+    source: string;
+    heart_rate_bpm: number;
+    pr_ms: number;
+    qrs_ms: number;
+    qt_ms: number;
+    qtc_ms: number;
+    rr_interval_ms: number;
+}
+
 export interface PredictionResult {
     // ── Legacy fields ──
     prediction: number;
@@ -100,6 +112,7 @@ export interface PredictionResult {
     protective_factors?: ShapFactor[];
     clinical_recommendations?: string[];
     model_info?: ModelInfo;
+    ecg_metrics?: EcgMetrics;
 }
 
 export interface FeatureImportance {
