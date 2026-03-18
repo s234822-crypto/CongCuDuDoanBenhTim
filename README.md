@@ -167,7 +167,7 @@ POST /api/predict
 - **Dataset**: 5007 mẫu, 13 features
 
 ## Tác giả
-- CardioPredict AI - 2026
+Hồ Đại Vĩ - DH23TIN05
 
 ## License
 MIT License
