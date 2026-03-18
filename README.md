@@ -70,7 +70,7 @@ Server chạy tại: http://127.0.0.1:5000
 cd Fontend
 npm run dev
 ```
-Giao diện tại: http://localhost:5173
+Giao diện tại: http://localhost:5175
 
 ## Deploy miễn phí trên Hugging Face Spaces
 
@@ -167,7 +167,7 @@ POST /api/predict
 - **Dataset**: 5007 mẫu, 13 features
 
 ## Tác giả
-- CardioPredict AI - 2026
+Hồ Đại Vĩ - DH23TIN05
 
 ## License
 MIT License
