@@ -1,4 +1,10 @@
-"""Ứng dụng Flask dự đoán bệnh tim, sẵn sàng deploy trên Render."""
+"""
+app.py — Entry point LEGACY (phiên bản cũ, đơn giản, không có auth/DB).
+
+⚠️  CẢNH BÁO: Entry point chính của dự án là api.py (port 5001).
+    Hãy dùng: python api.py
+    File này chỉ giữ lại để tham khảo.
+"""
 
 import os
 from typing import Dict, Any
@@ -25,8 +31,6 @@ def load_model_bundle() -> Dict[str, Any]:
         env_model_path,
         os.path.abspath(os.path.join(base_dir, 'model.pkl')),
         os.path.abspath(os.path.join(base_dir, 'models', 'heart_model.pkl')),
-        os.path.abspath(os.path.join(base_dir, '..', 'DoAn_TimMach', 'model.pkl')),
-        os.path.abspath(os.path.join(base_dir, '..', 'DoAn_TimMach', 'models', 'heart_model.pkl')),
     ]
 
     # Giữ thứ tự ưu tiên, đồng thời loại path trống/trùng.

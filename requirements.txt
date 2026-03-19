@@ -1,4 +1,10 @@
-# Danh sách thư viện cần cài đặt
+# ====================================================
+# requirements.txt (root) - Dùng cho Heroku/Render deploy
+# File Procfile trỏ vào file này khi deploy.
+#
+# ⚠️  Để cài đặt local: dùng Backend/requirements.txt
+#    cd Backend && pip install -r requirements.txt
+# ====================================================
 flask>=2.0.0
 flask-cors>=3.0.0
 waitress>=2.0.0

@@ -2,7 +2,6 @@
 API Backend cho ứng dụng dự đoán bệnh tim
 Flask REST API để kết nối với Frontend React
 """
-
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from waitress import serve
