@@ -84,13 +84,13 @@ def _translate_postgres_sql(sql):
     """Adapt the SQLite query dialect already used by the fallback model code."""
     import re
     sql = re.sub(
-        r"DATE\\(\\s*'now'\\s*,\\s*'-(\\d+)\\s+days?'\\s*\\)",
+        r"DATE\(\s*'now'\s*,\s*'-(\d+)\s+days?'\s*\)",
         lambda match: "(CURRENT_DATE - INTERVAL '" + match.group(1) + " days')",
         sql,
         flags=re.IGNORECASE,
     )
     sql = re.sub(
-        r"strftime\\(\\s*'%Y-%m'\\s*,\\s*CreatedDate\\s*\\)",
+        r"strftime\(\s*'%Y-%m'\s*,\s*CreatedDate\s*\)",
         "TO_CHAR(CreatedDate, 'YYYY-MM')",
         sql,
         flags=re.IGNORECASE,
