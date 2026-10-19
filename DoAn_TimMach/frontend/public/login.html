@@ -1342,6 +1342,8 @@
                     : 'http://localhost:5000';
                 candidates.push(primaryPort, legacyPort, alternateHostPrimary, alternateHostLegacy, '');
             } else {
+                // Production Flask API is deployed as a separate Vercel project.
+                candidates.push('https://cong-cu-du-doan-benh-tim-wiqe.vercel.app');
                 candidates.push('');
             }
 
