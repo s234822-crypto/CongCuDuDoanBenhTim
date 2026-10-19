@@ -21,7 +21,7 @@ In Google Cloud Console, add `https://cong-cu-du-doan-benh-tim.vercel.app` to th
 
 ## Optional email OTP
 
-To send password reset codes by email, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM` on the API project. Without these settings the existing development fallback may display the OTP in the response, so configure SMTP before enabling password recovery for real users.
+To send password reset codes by email, configure `SMTP_EMAIL` and `SMTP_PASSWORD` on the API project. `SMTP_HOST` (default `smtp.gmail.com`) and `SMTP_PORT` (default `587`) can be overridden when needed. On Vercel, password recovery returns an error instead of exposing an OTP if email delivery is not configured. OTP hashes and expiration times are stored in PostgreSQL, so verification works across serverless invocations.
 
 ## Existing data
 
