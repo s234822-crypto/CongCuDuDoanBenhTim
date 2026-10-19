@@ -30,9 +30,17 @@ build/
 *.swo
 
 # Node.js (Frontend)
-Fontend/node_modules/
-Fontend/dist/
-Fontend/.cache/
+DoAn_TimMach/frontend/node_modules/
+DoAn_TimMach/frontend/.vite/
+DoAn_TimMach/frontend/dist/
+DoAn_TimMach/frontend/build/
+DoAn_TimMach/frontend/.cache/
+DoAn_TimMach/frontend/package-lock.json
+
+# Local database / generated data
+DoAn_TimMach/backend/database/
+DoAn_TimMach/backend/*.db
+DoAn_TimMach/backend/**/*.db
 
 # OS
 .DS_Store
