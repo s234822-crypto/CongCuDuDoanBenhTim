@@ -4,7 +4,6 @@ Flask REST API để kết nối với Frontend React
 """
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from waitress import serve
 import joblib
 import pandas as pd
 import numpy as np
@@ -1494,6 +1493,7 @@ if __name__ == '__main__':
         print(f"Auth DB error: {AUTH_DB_BOOT_STATUS.get('error')}")
     print(f"Server running on http://{host}:{port}")
     if use_waitress:
+        from waitress import serve
         serve(app, host=host, port=port)
     else:
         app.run(host=host, port=port, debug=False)
