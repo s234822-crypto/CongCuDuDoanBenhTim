@@ -22,7 +22,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-from models.user import User, Diagnosis, AuditLog, init_db, get_db_connection_info
+from models.user import User, Diagnosis, AuditLog, PasswordResetOtp, init_db, get_db_connection_info
 from monitor import metrics, compute_drift_signal, format_uptime
 
 app = Flask(__name__)
@@ -1323,8 +1323,7 @@ SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')  # Set in Vercel environment
 SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
 SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
 
-# Lưu OTP tạm trong bộ nhớ: { email: { 'code': '...', 'expires': timestamp } }
-_reset_otp_store = {}
+# Mã OTP được lưu trong database để hoạt động ổn định trên Vercel serverless.
 
 
 def _send_otp_email(to_email: str, otp_code: str) -> bool:
@@ -1379,7 +1378,7 @@ def forgot_password():
             return jsonify({'error': 'Email kh\u00f4ng t\u1ed3n t\u1ea1i trong h\u1ec7 th\u1ed1ng'}), 404
 
         code = ''.join(random.choices(string.digits, k=6))
-        _reset_otp_store[email] = {'code': code, 'expires': time.time() + 300}
+        PasswordResetOtp.save(email, code, time.time() + 300)
 
         email_sent = _send_otp_email(email, code)
 
@@ -1389,8 +1388,12 @@ def forgot_password():
                 'sent_via': 'email'
             })
         else:
+            if os.environ.get('VERCEL') or os.environ.get('FLASK_ENV') == 'production':
+                return jsonify({
+                    'error': 'Chưa cấu hình gửi email. Hãy cấu hình SMTP_EMAIL và SMTP_PASSWORD trên Vercel.'
+                }), 503
             return jsonify({
-                'message': 'M\u00e3 x\u00e1c nh\u1eadn \u0111\u00e3 \u0111\u01b0\u1ee3c t\u1ea1o (ch\u01b0a c\u1ea5u h\u00ecnh SMTP)',
+                'message': 'Mã xác nhận đã được tạo (chưa cấu hình SMTP)',
                 'sent_via': 'preview',
                 'otp_preview': code
             })
@@ -1409,13 +1412,12 @@ def verify_otp():
         if not email or not code:
             return jsonify({'error': 'Thiếu email hoặc mã xác nhận'}), 400
 
-        stored = _reset_otp_store.get(email)
-        if not stored:
+        otp_status = PasswordResetOtp.verify(email, code)
+        if otp_status == 'missing':
             return jsonify({'error': 'Chưa yêu cầu mã xác nhận cho email này'}), 400
-        if time.time() > stored['expires']:
-            del _reset_otp_store[email]
+        if otp_status == 'expired':
             return jsonify({'error': 'Mã xác nhận đã hết hạn. Vui lòng yêu cầu mã mới.'}), 400
-        if not hmac.compare_digest(stored['code'], code):
+        if otp_status != 'valid':
             return jsonify({'error': 'Mã xác nhận không đúng'}), 400
 
         return jsonify({'message': 'Mã xác nhận hợp lệ', 'verified': True})
@@ -1437,20 +1439,19 @@ def reset_password():
         if len(new_password) < 6:
             return jsonify({'error': 'Mật khẩu phải có ít nhất 6 ký tự'}), 400
 
-        stored = _reset_otp_store.get(email)
-        if not stored:
+        otp_status = PasswordResetOtp.verify(email, code)
+        if otp_status == 'missing':
             return jsonify({'error': 'Chưa yêu cầu mã xác nhận'}), 400
-        if time.time() > stored['expires']:
-            del _reset_otp_store[email]
+        if otp_status == 'expired':
             return jsonify({'error': 'Mã xác nhận đã hết hạn'}), 400
-        if not hmac.compare_digest(stored['code'], code):
+        if otp_status != 'valid':
             return jsonify({'error': 'Mã xác nhận không đúng'}), 400
 
         success, msg = User.reset_password(email, new_password)
         if not success:
             return jsonify({'error': msg}), 400
 
-        del _reset_otp_store[email]
+        PasswordResetOtp.delete(email)
         return jsonify({'message': msg})
     except Exception as e:
         return jsonify({'error': f'Lỗi server: {str(e)}'}), 500
