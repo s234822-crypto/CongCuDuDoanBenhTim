@@ -872,8 +872,8 @@ def get_system_stats():
     db_ok = True
     db_mode = 'unknown'
     try:
-        from models.user import _is_mssql_mode
-        db_mode = 'mssql' if _is_mssql_mode() else 'sqlite'
+        from models.user import _is_mssql_mode, _is_postgres_mode
+        db_mode = 'mssql' if _is_mssql_mode() else ('postgres' if _is_postgres_mode() else 'sqlite')
         conn = __import__('models.user', fromlist=['get_db']).get_db()
         conn.close()
     except Exception:
