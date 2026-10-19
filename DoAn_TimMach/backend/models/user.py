@@ -5,6 +5,9 @@ Sử dụng bảng TaiKhoan (tài khoản) và BenhNhan (bệnh nhân) trên SQL
 
 import sqlite3
 import os
+import time
+import hmac
+import hashlib
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -353,6 +356,15 @@ def init_db():
                     CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS PasswordResetOtps (
+                    Id BIGSERIAL PRIMARY KEY,
+                    Email VARCHAR(150) NOT NULL UNIQUE,
+                    CodeHash CHAR(64) NOT NULL,
+                    ExpiresAt DOUBLE PRECISION NOT NULL,
+                    CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
         finally:
             conn.close()
@@ -503,6 +515,15 @@ def init_db():
             LatencyMs REAL NULL,
             HttpStatus INTEGER NULL,
             Detail VARCHAR(500) NULL,
+            CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS PasswordResetOtps (
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Email VARCHAR(150) NOT NULL UNIQUE,
+            CodeHash CHAR(64) NOT NULL,
+            ExpiresAt REAL NOT NULL,
             CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -1279,6 +1300,59 @@ class Diagnosis:
                 'avg_score': round(avg, 1),
             })
         return result
+
+
+class PasswordResetOtp:
+    """Persist expiring password reset codes across serverless invocations."""
+
+    @staticmethod
+    def _hash(email, code):
+        return hashlib.sha256(f"{_normalize_email(email)}:{code}".encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def save(email, code, expires_at):
+        email = _normalize_email(email)
+        conn = get_db()
+        try:
+            conn.execute('DELETE FROM PasswordResetOtps WHERE Email = ?', (email,))
+            conn.execute(
+                'INSERT INTO PasswordResetOtps (Email, CodeHash, ExpiresAt) VALUES (?, ?, ?)',
+                (email, PasswordResetOtp._hash(email, code), float(expires_at))
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def verify(email, code):
+        email = _normalize_email(email)
+        conn = get_db()
+        try:
+            row = _fetchone_dict(
+                conn,
+                'SELECT CodeHash, ExpiresAt FROM PasswordResetOtps WHERE Email = ?',
+                (email,)
+            )
+        finally:
+            conn.close()
+
+        if not row:
+            return 'missing'
+        if time.time() > float(row.get('ExpiresAt') or 0):
+            PasswordResetOtp.delete(email)
+            return 'expired'
+        if not hmac.compare_digest(str(row.get('CodeHash') or ''), PasswordResetOtp._hash(email, code)):
+            return 'invalid'
+        return 'valid'
+
+    @staticmethod
+    def delete(email):
+        conn = get_db()
+        try:
+            conn.execute('DELETE FROM PasswordResetOtps WHERE Email = ?', (_normalize_email(email),))
+            conn.commit()
+        finally:
+            conn.close()
 
 
 # ==================== AUDIT LOG (Phase 2) ====================
