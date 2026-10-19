@@ -57,6 +57,91 @@ def _is_mssql_mode():
     return mode in ('mssql', 'sqlserver', 'sql_server')
 
 
+def _is_postgres_mode():
+    return os.getenv('DB_MODE', '').strip().lower() in ('postgres', 'postgresql', 'neon')
+
+
+class _CaseInsensitiveDict(dict):
+    """Allow existing model code to read PostgreSQL's lowercase column names."""
+    def __getitem__(self, key):
+        try:
+            return super().__getitem__(key)
+        except KeyError:
+            wanted = str(key).lower()
+            for name, value in self.items():
+                if str(name).lower() == wanted:
+                    return value
+            raise
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
+def _translate_postgres_sql(sql):
+    """Adapt the SQLite query dialect already used by the fallback model code."""
+    import re
+    sql = re.sub(
+        r"DATE\\(\\s*'now'\\s*,\\s*'-(\\d+)\\s+days?'\\s*\\)",
+        lambda match: "(CURRENT_DATE - INTERVAL '" + match.group(1) + " days')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"strftime\\(\\s*'%Y-%m'\\s*,\\s*CreatedDate\\s*\\)",
+        "TO_CHAR(CreatedDate, 'YYYY-MM')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    return sql.replace('?', '%s')
+
+
+class _PostgresCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.lastrowid = None
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    def execute(self, sql, params=()):
+        sql = _translate_postgres_sql(sql)
+        is_insert = sql.lstrip().lower().startswith('insert')
+        if is_insert and ' returning ' not in sql.lower():
+            sql = sql.rstrip().rstrip(';') + ' RETURNING id'
+        self._cursor.execute(sql, params or ())
+        if is_insert:
+            row = self._cursor.fetchone()
+            self.lastrowid = row[0] if row else None
+        return self
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+
+class _PostgresConnection:
+    def __init__(self, connection):
+        self._connection = connection
+
+    def cursor(self):
+        return _PostgresCursor(self._connection.cursor())
+
+    def execute(self, sql, params=()):
+        return self.cursor().execute(sql, params)
+
+    def commit(self):
+        self._connection.commit()
+
+    def close(self):
+        self._connection.close()
+
+
 def _normalize_email(email: str) -> str:
     return (email or '').strip().lower()
 
@@ -101,7 +186,8 @@ def _fetchone_dict(conn, query, params=()):
     if row is None:
         return None
     cols = [c[0] for c in cur.description]
-    return {cols[i]: row[i] for i in range(len(cols))}
+    result = {cols[i]: row[i] for i in range(len(cols))}
+    return _CaseInsensitiveDict(result) if _is_postgres_mode() else result
 
 
 def _fetchall_dict(conn, query, params=()):
@@ -109,7 +195,8 @@ def _fetchall_dict(conn, query, params=()):
     cur.execute(query, params)
     cols = [c[0] for c in cur.description]
     rows = cur.fetchall()
-    return [{cols[i]: r[i] for i in range(len(cols))} for r in rows]
+    result = [{cols[i]: r[i] for i in range(len(cols))} for r in rows]
+    return [_CaseInsensitiveDict(row) for row in result] if _is_postgres_mode() else result
 
 
 def _normalize_date_end(date_to):
@@ -120,6 +207,18 @@ def _normalize_date_end(date_to):
 
 def get_db():
     """Tạo kết nối database"""
+    if _is_postgres_mode():
+        database_url = (os.getenv('DATABASE_URL') or os.getenv('DB_CONNECTION_STRING') or '').strip()
+        if not database_url:
+            raise RuntimeError('Thiếu DATABASE_URL. Hãy cấu hình PostgreSQL trên Vercel.')
+        try:
+            import psycopg
+            return _PostgresConnection(psycopg.connect(database_url, connect_timeout=5))
+        except ImportError as e:
+            raise RuntimeError('Thiếu psycopg. Hãy cài psycopg[binary].') from e
+        except Exception as e:
+            raise RuntimeError(f'Không thể kết nối PostgreSQL: {e}') from e
+
     if _is_mssql_mode():
         if pyodbc is None:
             raise RuntimeError('Thiếu pyodbc. Hãy cài đặt: pip install pyodbc')
@@ -176,6 +275,19 @@ def get_db():
 
 def get_db_connection_info():
     """Lấy thông tin kết nối DB hiện tại để debug cấu hình deploy/runtime."""
+    if _is_postgres_mode():
+        conn = get_db()
+        try:
+            row = _fetchone_dict(conn, 'SELECT current_database() AS DatabaseName, current_user AS LoginUser')
+            return {
+                'server': 'managed-postgresql',
+                'database': row.get('DatabaseName') if row else None,
+                'loginUser': row.get('LoginUser') if row else None,
+                'mode': 'postgres'
+            }
+        finally:
+            conn.close()
+
     if not _is_mssql_mode():
         return {
             'server': 'local-file',
@@ -202,6 +314,50 @@ def get_db_connection_info():
 
 def init_db():
     """Khởi tạo / cập nhật schema"""
+    if _is_postgres_mode():
+        conn = get_db()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS Users (
+                    Id BIGSERIAL PRIMARY KEY,
+                    FullName VARCHAR(100) NOT NULL,
+                    Email VARCHAR(150) NOT NULL UNIQUE,
+                    PasswordHash VARCHAR(256) NOT NULL,
+                    Role VARCHAR(20) NOT NULL DEFAULT 'doctor',
+                    CreatedDate TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS Diagnoses (
+                    Id BIGSERIAL PRIMARY KEY,
+                    UserId BIGINT NOT NULL REFERENCES Users(Id),
+                    Age INTEGER NOT NULL, Sex INTEGER NOT NULL, Cp INTEGER NOT NULL,
+                    Trestbps DOUBLE PRECISION NOT NULL, Chol DOUBLE PRECISION NOT NULL,
+                    Fbs INTEGER NOT NULL, Restecg INTEGER NOT NULL,
+                    Thalach DOUBLE PRECISION NOT NULL, Exang INTEGER NOT NULL,
+                    Oldpeak DOUBLE PRECISION NOT NULL, Slope INTEGER NOT NULL,
+                    Ca INTEGER NOT NULL, Thal INTEGER NOT NULL,
+                    Prediction INTEGER NOT NULL, RiskScore DOUBLE PRECISION NOT NULL,
+                    RiskLevel VARCHAR(20) NOT NULL,
+                    CreatedDate TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS AuditLog (
+                    Id BIGSERIAL PRIMARY KEY,
+                    UserId BIGINT NULL,
+                    Action VARCHAR(50) NOT NULL, Endpoint VARCHAR(200) NOT NULL,
+                    IpAddress VARCHAR(50) NULL, LatencyMs DOUBLE PRECISION NULL,
+                    HttpStatus INTEGER NULL, Detail VARCHAR(500) NULL,
+                    CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+        return
+
     if _is_mssql_mode():
         conn = get_db()
         cur = conn.cursor()
