@@ -59,8 +59,19 @@ def refresh_auth_db_status():
         }
 
 
-# Khởi tạo database và kiểm tra DB auth ngay khi start
-init_db()
+# Khởi tạo database khi start. Trên serverless, SQL Server có thể chưa cấu hình
+# hoặc chưa truy cập được; không để lỗi DB làm sập toàn bộ Flask app và các
+# endpoint không phụ thuộc DB (ví dụ Google Client ID, health check).
+try:
+    init_db()
+except Exception as e:
+    AUTH_DB_BOOT_STATUS = {
+        'connected': False,
+        'mode': os.environ.get('DB_MODE', 'mssql'),
+        'error': str(e)
+    }
+    print(f'Auth database initialization failed: {e}')
+
 refresh_auth_db_status()
 
 # Continuous feature indices (age, trestbps, chol, thalach, oldpeak)
@@ -1308,7 +1319,7 @@ def google_login():
 
 # SMTP Email config
 SMTP_EMAIL = os.environ.get('SMTP_EMAIL', 'viho317@gmail.com')
-SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', 'nhyg gdzi fqsj rdby')  # Google App Password
+SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')  # Set in Vercel environment variables
 SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
 SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
 
